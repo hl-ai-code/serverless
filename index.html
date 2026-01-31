@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>麻将记分器</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<!-- PWA: manifest -->
+<link rel="manifest" href="manifest.json">
+
+<!-- PWA: iOS support -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="apple-touch-icon" href="icon.png">
+
+<style>
+    body { font-family: Arial; padding: 10px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 6px; text-align: center; }
+    input[type="number"] { width: 60px; font-size: 16px; }
+    select { width: 90px; font-size: 16px; }
+    .summary { font-weight: bold; background: #f0f0f0; }
+    .dealer { background: #fff4c2; font-weight: bold; }
+    .current { background: #d0ebff !important; }
+    .statline { font-size: 14px; color: #444; }
+    @media (max-width: 768px) {
+        table { font-size: 16px; }
+        th, td { padding: 8px; }
+        select, input { font-size: 18px; }
+        body { padding: 5px; }
+    }
+</style>
+</head>
+<body>
+
+<h2>麻将 16 局 记分器</h2>
+
+<label>东: <input id="nameE" placeholder="玩家名"></label>
+<label>南: <input id="nameS" placeholder="玩家名"></label>
+<label>西: <input id="nameW" placeholder="玩家名"></label>
+<label>北: <input id="nameN" placeholder="玩家名"></label>
+
+<div style="overflow-x:auto;">
+<table id="scoreTable">
+<thead>
+<tr>
+    <th>风圈</th>
+    <th>番数</th>
+    <th>胡</th>
+    <th>放炮 / 自摸</th>
+    <th id="colE">东<br><span id="statE" class="statline"></span></th>
+    <th id="colS">南<br><span id="statS" class="statline"></span></th>
+    <th id="colW">西<br><span id="statW" class="statline"></span></th>
+    <th id="colN">北<br><span id="statN" class="statline"></span></th>
+</tr>
+</thead>
+
+<tbody id="rounds"></tbody>
+
+<tfoot>
+<tr class="summary">
+    <td colspan="4">总分</td>
+    <td id="sumE">0</td>
+    <td id="sumS">0</td>
+    <td id="sumW">0</td>
+    <td id="sumN">0</td>
+</tr>
+</tfoot>
+</table>
+</div>
+
+<script>
+const players = ["E","S","W","N"];
+const seatNames = {E:"东", S:"南", W:"西", N:"北"};
+const winds = ["东", "南", "西", "北"];
+const rounds = [];
+
+winds.forEach(wind => {
+    players.forEach(p => {
+        rounds.push({ wind, seat: p });
+    });
+});
+
+let stats = {
+    E: {hu:0, fp:0, zimo:0},
+    S: {hu:0, fp:0, zimo:0},
+    W: {hu:0, fp:0, zimo:0},
+    N: {hu:0, fp:0, zimo:0}
+};
+
+function getName(p) {
+    const v = document.getElementById("name" + p).value.trim();
+    return v ? `${seatNames[p]}（${v}）` : seatNames[p];
+}
+
+function updateStatsDisplay() {
+    players.forEach(p => {
+        let stars = "⭐".repeat(stats[p].hu);
+        let zimos = "🎉".repeat(stats[p].zimo);
+        let cries = "😢".repeat(stats[p].fp);
+        document.getElementById("stat" + p).textContent = stars + zimos + cries;
+    });
+}
+
+function createTable() {
+    const tbody = document.getElementById("rounds");
+
+    rounds.forEach((r, index) => {
+        const tr = document.createElement("tr");
+        tr.dataset.index = index;
+
+        tr.innerHTML = `
+            <td class="windLabel"></td>
+            <td><input type="number" class="fan" value="0" min="0"></td>
+
+            <td><select class="hu">
+                <option value="">--</option>
+                <option value="huang">黄庄</option>
+            </select></td>
+
+            <td><select class="fangpao">
+                <option value="">--</option>
+            </select></td>
+
+            ${players.map(p=>`<td class="score ${p}">0</td>`).join("")}
+        `;
+
+        tr.addEventListener("click", () => highlightRow(index));
+        tbody.appendChild(tr);
+    });
+
+    document.querySelectorAll("select, input").forEach(el=>{
+        el.addEventListener("change", updateScores);
+    });
+
+    ["E","S","W","N"].forEach(p=>{
+        document.getElementById("name" + p).addEventListener("input", () => {
+            updateHeaders();
+            updateDropdownLabels();
+            updateWindLabels();
+        });
+    });
+}
+
+function highlightRow(i) {
+    document.querySelectorAll("#rounds tr").forEach(row => row.classList.remove("current"));
+    document.querySelector(`#rounds tr[data-index="${i}"]`).classList.add("current");
+}
+
+function updateHeaders() {
+    ["E","S","W","N"].forEach(p=>{
+        document.getElementById("col" + p).innerHTML =
+            getName(p) + "<br><span id='stat" + p + "' class='statline'></span>";
+    });
+    updateStatsDisplay();
+}
+
+function updateWindLabels() {
+    const rows = document.querySelectorAll("#rounds tr");
+
+    rows.forEach((row, i) => {
+        const r = rounds[i];
+        const seatLabel = getName(r.seat);
+        const windLabel = r.wind;
+        const isDealer = (r.seat === "E");
+
+        const cell = row.querySelector(".windLabel");
+        cell.textContent = `${windLabel}-${seatLabel}`;
+        cell.className = isDealer ? "windLabel dealer" : "windLabel";
+    });
+}
+
+function updateDropdownLabels() {
+    const labels = {
+        E: getName("E"),
+        S: getName("S"),
+        W: getName("W"),
+        N: getName("N")
+    };
+
+    document.querySelectorAll(".hu").forEach(sel => {
+        const current = sel.value;
+        sel.innerHTML = `
+            <option value="">--</option>
+            <option value="huang">黄庄</option>
+            ${Object.keys(labels).map(p => `<option value="${p}">${labels[p]}</option>`).join("")}
+        `;
+        sel.value = current;
+    });
+
+    document.querySelectorAll(".fangpao").forEach(sel => {
+        const current = sel.value;
+        sel.innerHTML = `
+            <option value="">--</option>
+            ${Object.keys(labels).map(p => `<option value="${p}">${labels[p]}</option>`).join("")}
+            <option value="zimo">自摸</option>
+        `;
+        sel.value = current;
+    });
+}
+
+function updateScores() {
+    let totals = {E:0, S:0, W:0, N:0};
+
+    stats = {E:{hu:0,fp:0,zimo:0}, S:{hu:0,fp:0,zimo:0}, W:{hu:0,fp:0,zimo:0}, N:{hu:0,fp:0,zimo:0}};
+
+    document.querySelectorAll("#rounds tr").forEach(row=>{
+        let fan = parseInt(row.querySelector(".fan").value) || 0;
+        let hu = row.querySelector(".hu").value;
+        let fp = row.querySelector(".fangpao").value;
+
+        let scores = {E:0, S:0, W:0, N:0};
+
+        if (hu === "huang") {
+            players.forEach(p => scores[p] = 0);
+        }
+        else if (hu) {
+            if (fp === "zimo") {
+                stats[hu].zimo++;
+
+                scores[hu] = 3 * (fan + 8);
+                players.forEach(p=>{
+                    if (p !== hu) scores[p] = -(fan + 8);
+                });
+            } else if (fp) {
+                stats[hu].hu++;
+                stats[fp].fp++;
+
+                scores[hu] = fan + 24;
+                players.forEach(p=>{
+                    if (p === fp) scores[p] = -(fan + 8);
+                    else if (p !== hu) scores[p] = -8;
+                });
+            }
+        }
+
+        players.forEach(p=>{
+            row.querySelector(`.${p}`).textContent = scores[p];
+            totals[p] += scores[p];
+        });
+    });
+
+    updateStatsDisplay();
+
+    document.getElementById("sumE").textContent = totals.E;
+    document.getElementById("sumS").textContent = totals.S;
+    document.getElementById("sumW").textContent = totals.W;
+    document.getElementById("sumN").textContent = totals.N;
+}
+
+createTable();
+updateHeaders();
+updateDropdownLabels();
+updateWindLabels();
+highlightRow(0);
+</script>
+
+<!-- PWA: register service worker -->
+<script>
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("sw.js");
+}
+</script>
+
+</body>
+</html>

@@ -5,28 +5,60 @@
 <title>麻将记分器</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<!-- PWA: manifest -->
 <link rel="manifest" href="manifest.json">
-
-<!-- PWA: iOS support -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <link rel="apple-touch-icon" href="icon.png">
 
 <style>
-    body { font-family: Arial; padding: 10px; }
+    body { font-family: Arial, sans-serif; padding: 10px; }
+    h2 { margin-top: 0; }
     table { border-collapse: collapse; width: 100%; margin-top: 10px; }
     th, td { border: 1px solid #ccc; padding: 6px; text-align: center; }
     input[type="number"] { width: 60px; font-size: 16px; }
     select { width: 90px; font-size: 16px; }
+    button { font-size: 14px; padding: 4px 8px; margin: 4px 2px; }
     .summary { font-weight: bold; background: #f0f0f0; }
     .dealer { background: #fff4c2; font-weight: bold; }
     .current { background: #d0ebff !important; }
     .statline { font-size: 14px; color: #444; }
+    .section-header {
+        font-weight: bold;
+        cursor: pointer;
+        user-select: none;
+        margin: 6px 0;
+    }
+    .section-header span.toggle {
+        font-size: 12px;
+        color: #666;
+        margin-left: 4px;
+    }
+    .player-list {
+        margin-bottom: 6px;
+        padding-left: 4px;
+    }
+    .player-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-size: 14px;
+        margin: 2px 0;
+    }
+    .player-row span.name {
+        flex: 1;
+    }
+    .player-row button {
+        font-size: 12px;
+        padding: 2px 6px;
+    }
+    .controls {
+        margin-top: 10px;
+    }
     @media (max-width: 768px) {
         table { font-size: 16px; }
         th, td { padding: 8px; }
         select, input { font-size: 18px; }
+        button { font-size: 16px; }
         body { padding: 5px; }
     }
 </style>
@@ -35,10 +67,25 @@
 
 <h2>麻将 16 局 记分器</h2>
 
-<label>东: <input id="nameE" placeholder="玩家名"></label>
-<label>南: <input id="nameS" placeholder="玩家名"></label>
-<label>西: <input id="nameW" placeholder="玩家名"></label>
-<label>北: <input id="nameN" placeholder="玩家名"></label>
+<!-- 玩家列表（可折叠，默认展开） -->
+<div>
+    <div id="playerListHeader" class="section-header">
+        玩家列表 <span id="playerListToggle" class="toggle">▼</span>
+    </div>
+    <div id="playerListContainer" class="player-list">
+        <div id="playerList"></div>
+        <button id="addPlayerBtn">添加玩家</button>
+    </div>
+</div>
+
+<!-- 座位选择 -->
+<div style="margin-top:8px;">
+    <strong>座位选择:</strong><br>
+    东: <select id="seatE"></select>
+    南: <select id="seatS"></select>
+    西: <select id="seatW"></select>
+    北: <select id="seatN"></select>
+</div>
 
 <div style="overflow-x:auto;">
 <table id="scoreTable">
@@ -69,15 +116,19 @@
 </table>
 </div>
 
+<div class="controls">
+    <button id="resetGameBtn">重置本局</button>
+    <button id="resetAllBtn">全部重置</button>
+</div>
+
 <script>
-const players = ["E","S","W","N"];
+const playersSeats = ["E","S","W","N"];
 const seatNames = {E:"东", S:"南", W:"西", N:"北"};
 const winds = ["东", "南", "西", "北"];
-const rounds = [];
-
+const roundsMeta = [];
 winds.forEach(wind => {
-    players.forEach(p => {
-        rounds.push({ wind, seat: p });
+    playersSeats.forEach(p => {
+        roundsMeta.push({ wind, seat: p });
     });
 });
 
@@ -88,82 +139,157 @@ let stats = {
     N: {hu:0, fp:0, zimo:0}
 };
 
-function getName(p) {
-    const v = document.getElementById("name" + p).value.trim();
-    return v ? `${seatNames[p]}（${v}）` : seatNames[p];
+let players = [];   // global player list
+let seating = {};   // {E: name, S: name, ...}
+let gameState = null;
+
+// ---------- localStorage helpers ----------
+const LS_PLAYERS = "mahjong_players";
+const LS_SEATING = "mahjong_seating";
+const LS_GAME = "mahjong_game";
+
+function savePlayers() {
+    localStorage.setItem(LS_PLAYERS, JSON.stringify(players));
 }
 
-function updateStatsDisplay() {
-    players.forEach(p => {
-        let stars = "⭐".repeat(stats[p].hu);
-        let zimos = "🎉".repeat(stats[p].zimo);
-        let cries = "😢".repeat(stats[p].fp);
-        document.getElementById("stat" + p).textContent = stars + zimos + cries;
+function saveSeating() {
+    localStorage.setItem(LS_SEATING, JSON.stringify(seating));
+}
+
+function saveGameState() {
+    const rows = document.querySelectorAll("#rounds tr");
+    const roundsData = [];
+    rows.forEach(row => {
+        const fan = parseInt(row.querySelector(".fan").value) || 0;
+        const hu = row.querySelector(".hu").value || "";
+        const fp = row.querySelector(".fangpao").value || "";
+        roundsData.push({fan, hu, fp});
+    });
+    const state = {
+        rounds: roundsData,
+        stats: stats,
+        currentRound: getCurrentHighlightedIndex()
+    };
+    localStorage.setItem(LS_GAME, JSON.stringify(state));
+}
+
+function loadPlayers() {
+    const raw = localStorage.getItem(LS_PLAYERS);
+    if (raw) {
+        try { players = JSON.parse(raw) || []; }
+        catch { players = []; }
+    } else {
+        players = [];
+    }
+}
+
+function loadSeating() {
+    const raw = localStorage.getItem(LS_SEATING);
+    if (raw) {
+        try { seating = JSON.parse(raw) || {}; }
+        catch { seating = {}; }
+    } else {
+        seating = {};
+    }
+}
+
+function loadGameState() {
+    const raw = localStorage.getItem(LS_GAME);
+    if (raw) {
+        try { gameState = JSON.parse(raw) || null; }
+        catch { gameState = null; }
+    } else {
+        gameState = null;
+    }
+}
+
+// ---------- Player list UI ----------
+function renderPlayerList() {
+    const container = document.getElementById("playerList");
+    container.innerHTML = "";
+    players.forEach((name, idx) => {
+        const row = document.createElement("div");
+        row.className = "player-row";
+        const span = document.createElement("span");
+        span.className = "name";
+        span.textContent = "• " + name;
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "🗑";
+        delBtn.onclick = () => {
+            // remove from players
+            const removed = players[idx];
+            players.splice(idx, 1);
+            savePlayers();
+            // remove from seating if used
+            Object.keys(seating).forEach(k => {
+                if (seating[k] === removed) {
+                    delete seating[k];
+                }
+            });
+            saveSeating();
+            renderPlayerList();
+            updateSeatingDropdowns();
+            updateHeaders();
+        };
+        row.appendChild(span);
+        row.appendChild(delBtn);
+        container.appendChild(row);
     });
 }
 
-function createTable() {
-    const tbody = document.getElementById("rounds");
+function addPlayer() {
+    const name = prompt("输入玩家名字：");
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    players.push(trimmed);
+    savePlayers();
+    renderPlayerList();
+    updateSeatingDropdowns();
+}
 
-    rounds.forEach((r, index) => {
-        const tr = document.createElement("tr");
-        tr.dataset.index = index;
-
-        tr.innerHTML = `
-            <td class="windLabel"></td>
-            <td><input type="number" class="fan" value="0" min="0"></td>
-
-            <td><select class="hu">
-                <option value="">--</option>
-                <option value="huang">黄庄</option>
-            </select></td>
-
-            <td><select class="fangpao">
-                <option value="">--</option>
-            </select></td>
-
-            ${players.map(p=>`<td class="score ${p}">0</td>`).join("")}
-        `;
-
-        tr.addEventListener("click", () => highlightRow(index));
-        tbody.appendChild(tr);
-    });
-
-    document.querySelectorAll("select, input").forEach(el=>{
-        el.addEventListener("change", updateScores);
-    });
-
-    ["E","S","W","N"].forEach(p=>{
-        document.getElementById("name" + p).addEventListener("input", () => {
+// ---------- Seating ----------
+function updateSeatingDropdowns() {
+    const seatIds = ["E","S","W","N"];
+    seatIds.forEach(seat => {
+        const sel = document.getElementById("seat" + seat);
+        const prev = seating[seat] || "";
+        sel.innerHTML = `<option value="">--</option>` +
+            players.map(p => `<option value="${p}">${p}</option>`).join("");
+        sel.value = prev && players.includes(prev) ? prev : "";
+        sel.onchange = () => {
+            const v = sel.value;
+            if (v) seating[seat] = v;
+            else delete seating[seat];
+            saveSeating();
             updateHeaders();
             updateDropdownLabels();
             updateWindLabels();
-        });
+        };
     });
 }
 
-function highlightRow(i) {
-    document.querySelectorAll("#rounds tr").forEach(row => row.classList.remove("current"));
-    document.querySelector(`#rounds tr[data-index="${i}"]`).classList.add("current");
+// ---------- Headers / labels ----------
+function getSeatLabel(p) {
+    const name = seating[p];
+    return name ? `${seatNames[p]}（${name}）` : seatNames[p];
 }
 
 function updateHeaders() {
     ["E","S","W","N"].forEach(p=>{
         document.getElementById("col" + p).innerHTML =
-            getName(p) + "<br><span id='stat" + p + "' class='statline'></span>";
+            getSeatLabel(p) + "<br><span id='stat" + p + "' class='statline'></span>";
     });
     updateStatsDisplay();
 }
 
 function updateWindLabels() {
     const rows = document.querySelectorAll("#rounds tr");
-
     rows.forEach((row, i) => {
-        const r = rounds[i];
-        const seatLabel = getName(r.seat);
+        const r = roundsMeta[i];
+        const seatLabel = getSeatLabel(r.seat);
         const windLabel = r.wind;
         const isDealer = (r.seat === "E");
-
         const cell = row.querySelector(".windLabel");
         cell.textContent = `${windLabel}-${seatLabel}`;
         cell.className = isDealer ? "windLabel dealer" : "windLabel";
@@ -172,10 +298,10 @@ function updateWindLabels() {
 
 function updateDropdownLabels() {
     const labels = {
-        E: getName("E"),
-        S: getName("S"),
-        W: getName("W"),
-        N: getName("N")
+        E: getSeatLabel("E"),
+        S: getSeatLabel("S"),
+        W: getSeatLabel("W"),
+        N: getSeatLabel("N")
     };
 
     document.querySelectorAll(".hu").forEach(sel => {
@@ -199,9 +325,60 @@ function updateDropdownLabels() {
     });
 }
 
+// ---------- Stats / scores ----------
+function updateStatsDisplay() {
+    playersSeats.forEach(p => {
+        let stars = "⭐".repeat(stats[p].hu);
+        let zimos = "🎉".repeat(stats[p].zimo);
+        let cries = "😢".repeat(stats[p].fp);
+        document.getElementById("stat" + p).textContent = stars + zimos + cries;
+    });
+}
+
+function createTable() {
+    const tbody = document.getElementById("rounds");
+    tbody.innerHTML = "";
+    roundsMeta.forEach((r, index) => {
+        const tr = document.createElement("tr");
+        tr.dataset.index = index;
+        tr.innerHTML = `
+            <td class="windLabel"></td>
+            <td><input type="number" class="fan" value="0" min="0"></td>
+            <td><select class="hu">
+                <option value="">--</option>
+                <option value="huang">黄庄</option>
+            </select></td>
+            <td><select class="fangpao">
+                <option value="">--</option>
+            </select></td>
+            ${playersSeats.map(p=>`<td class="score ${p}">0</td>`).join("")}
+        `;
+        tr.addEventListener("click", () => highlightRow(index));
+        tbody.appendChild(tr);
+    });
+
+    document.querySelectorAll(".hu, .fangpao, .fan").forEach(el=>{
+        el.addEventListener("change", () => {
+            updateScores();
+            saveGameState();
+        });
+    });
+}
+
+function highlightRow(i) {
+    document.querySelectorAll("#rounds tr").forEach(row => row.classList.remove("current"));
+    const row = document.querySelector(`#rounds tr[data-index="${i}"]`);
+    if (row) row.classList.add("current");
+}
+
+function getCurrentHighlightedIndex() {
+    const row = document.querySelector("#rounds tr.current");
+    if (!row) return 0;
+    return parseInt(row.dataset.index) || 0;
+}
+
 function updateScores() {
     let totals = {E:0, S:0, W:0, N:0};
-
     stats = {E:{hu:0,fp:0,zimo:0}, S:{hu:0,fp:0,zimo:0}, W:{hu:0,fp:0,zimo:0}, N:{hu:0,fp:0,zimo:0}};
 
     document.querySelectorAll("#rounds tr").forEach(row=>{
@@ -212,29 +389,27 @@ function updateScores() {
         let scores = {E:0, S:0, W:0, N:0};
 
         if (hu === "huang") {
-            players.forEach(p => scores[p] = 0);
+            playersSeats.forEach(p => scores[p] = 0);
         }
         else if (hu) {
             if (fp === "zimo") {
                 stats[hu].zimo++;
-
                 scores[hu] = 3 * (fan + 8);
-                players.forEach(p=>{
+                playersSeats.forEach(p=>{
                     if (p !== hu) scores[p] = -(fan + 8);
                 });
             } else if (fp) {
                 stats[hu].hu++;
                 stats[fp].fp++;
-
                 scores[hu] = fan + 24;
-                players.forEach(p=>{
+                playersSeats.forEach(p=>{
                     if (p === fp) scores[p] = -(fan + 8);
                     else if (p !== hu) scores[p] = -8;
                 });
             }
         }
 
-        players.forEach(p=>{
+        playersSeats.forEach(p=>{
             row.querySelector(`.${p}`).textContent = scores[p];
             totals[p] += scores[p];
         });
@@ -248,14 +423,98 @@ function updateScores() {
     document.getElementById("sumN").textContent = totals.N;
 }
 
-createTable();
-updateHeaders();
-updateDropdownLabels();
-updateWindLabels();
-highlightRow(0);
+// ---------- Reset buttons ----------
+function resetGame() {
+    localStorage.removeItem(LS_GAME);
+    localStorage.removeItem(LS_SEATING);
+    seating = {};
+    stats = {E:{hu:0,fp:0,zimo:0}, S:{hu:0,fp:0,zimo:0}, W:{hu:0,fp:0,zimo:0}, N:{hu:0,fp:0,zimo:0}};
+    createTable();
+    updateSeatingDropdowns();
+    updateHeaders();
+    updateDropdownLabels();
+    updateWindLabels();
+    updateScores();
+    highlightRow(0);
+}
+
+function resetAll() {
+    if (!confirm("确定要全部重置吗？玩家列表也会被清空。")) return;
+    localStorage.removeItem(LS_PLAYERS);
+    localStorage.removeItem(LS_SEATING);
+    localStorage.removeItem(LS_GAME);
+    players = [];
+    seating = {};
+    stats = {E:{hu:0,fp:0,zimo:0}, S:{hu:0,fp:0,zimo:0}, W:{hu:0,fp:0,zimo:0}, N:{hu:0,fp:0,zimo:0}};
+    renderPlayerList();
+    createTable();
+    updateSeatingDropdowns();
+    updateHeaders();
+    updateDropdownLabels();
+    updateWindLabels();
+    updateScores();
+    highlightRow(0);
+}
+
+// ---------- Collapsible player list ----------
+function initPlayerListCollapse() {
+    const header = document.getElementById("playerListHeader");
+    const toggle = document.getElementById("playerListToggle");
+    const container = document.getElementById("playerListContainer");
+    let expanded = true; // default expanded
+
+    header.onclick = () => {
+        expanded = !expanded;
+        container.style.display = expanded ? "block" : "none";
+        toggle.textContent = expanded ? "▼" : "▲";
+    };
+
+    // initial state
+    container.style.display = "block";
+    toggle.textContent = "▼";
+}
+
+// ---------- Restore from localStorage ----------
+function restoreGameState() {
+    if (!gameState) return;
+    const rows = document.querySelectorAll("#rounds tr");
+    gameState.rounds.forEach((r, i) => {
+        if (!rows[i]) return;
+        rows[i].querySelector(".fan").value = r.fan || 0;
+        rows[i].querySelector(".hu").value = r.hu || "";
+        rows[i].querySelector(".fangpao").value = r.fp || "";
+    });
+    stats = gameState.stats || stats;
+    updateScores();
+    highlightRow(gameState.currentRound || 0);
+}
+
+// ---------- Init ----------
+function init() {
+    loadPlayers();
+    loadSeating();
+    loadGameState();
+
+    initPlayerListCollapse();
+    renderPlayerList();
+    createTable();
+    updateSeatingDropdowns();
+    updateHeaders();
+    updateDropdownLabels();
+    updateWindLabels();
+    updateScores();
+    highlightRow(0);
+
+    if (gameState) restoreGameState();
+
+    document.getElementById("addPlayerBtn").onclick = addPlayer;
+    document.getElementById("resetGameBtn").onclick = resetGame;
+    document.getElementById("resetAllBtn").onclick = resetAll;
+}
+
+init();
 </script>
 
-<!-- PWA: register service worker -->
 <script>
 if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js");
